@@ -38,7 +38,7 @@ We will use ansible-builder to build the execution environment in a container.
 From the *openshift-equinix-automation* directory run:
 
 ```
-$ ansible-builder build -t equinix-ocp-automation
+$ ansible-builder build -v 3 -t equinix-ocp-automation
 ```
 
 ## Configuration
