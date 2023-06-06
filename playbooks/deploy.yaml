@@ -1,0 +1,184 @@
+---
+- hosts: localhost
+  vars:
+    ansible_connection: local
+    
+  environment:
+    METAL_API_TOKEN: "{{ api_token }}"
+
+  tasks:
+  - name: (Equinix) Deploy utility server
+    equinix.metal.device:
+      project_id: "{{ project_id }}"
+      hostnames: utility
+      operating_system: rhel_8
+      plan: c3.small.x86
+      facility: da11
+      state: active
+      wait_timeout: 600
+
+  - name: "(Equinix) Deploy {{ cluster_name }} device"
+    equinix.metal.device:
+      project_id: "{{ project_id }}"
+      hostnames: "{{ cluster_name }}"
+      operating_system: custom_ipxe
+      plan: c3.small.x86
+      facility: da11
+      state: active
+      wait_timeout: 600
+      user_data: |
+        #!ipxe
+        shell
+      
+  - name: (Equinix) Gather information about all devices
+    equinix.metal.device_info:
+      project_id: "{{ project_id }}"
+    register: result
+  
+  - name: Add utility host
+    add_host:
+      hostname: "{{ result.devices[0].public_ipv4 }}"
+      ansible_private_key_file: "{{ ssh_private_key }}"
+      groups: utility
+
+  # Gather variables for cluster install
+  - name: (Equinix) Get mac address of first device
+    shell: metal device get --config /runner/metal.yaml -o json | jq -r .[0].network_ports[0].data.mac
+    register: mac_address
+
+  - name: (Equinix) Get gateway
+    shell: metal device get --config /runner/metal.yaml -o json | jq -r .[0].ip_addresses[0].gateway
+    register: gateway
+
+  - name: Set variables
+    set_fact:
+      # ID are used to reboot and to delete the instance
+      utility_id: "{{ result.devices[0].id }}"
+      node_id: " {{ result.devices[1].id }}"
+
+      # Network info
+      utility_ip: "{{ result.devices[0].public_ipv4 }}"
+      node_ip: "{{ result.devices[1].public_ipv4 }}"
+      node_mac: "{{ mac_address }}"
+      node_gateway: "{{ gateway  }}"
+
+# Setup utility server, used to iPXE discovery ISO for Assisted Installer
+- hosts: utility
+  remote_user: root
+
+  vars:
+    utility_ip: "{{ hostvars['localhost']['utility_ip'] }}"
+    utility_ipxe_url: "http://{{ utility_ip }}:8888/ipxe"
+    node_id: "{{ hostvars['localhost']['node_id'] }}"
+    node_ip: "{{ hostvars['localhost']['node_ip'] }}"
+    node_mac: "{{ hostvars['localhost']['node_mac'].stdout }}"
+    node_gateway: "{{ hostvars['localhost']['node_gateway'].stdout }}"
+
+  environment:
+    AI_OFFLINETOKEN: "{{ ai_offlinetoken }}"
+
+  tasks:
+    - name: (Utility) Install packages podman and python
+      dnf:
+        name:
+          - podman
+          - python3
+          - go
+        state: present
+
+    - name: (Utility) Install Metal CLI
+      command: go install github.com/equinix/metal-cli/cmd/metal@latest
+
+    - name: (Utility) Link Metal CLI bin
+      command: ln -s /root/go/bin/metal /usr/bin/metal
+
+    - name: (Utility) Copy Metal env
+      copy:
+        src: /runner/metal.yaml
+        dest: /root/metal.yaml
+
+    - name: (AICLI) Install aicli
+      pip:
+        name:
+          - aicli
+    - name: (AICLI) List cluster
+      command: aicli list cluster
+
+    - name: (Utility) Create data directory
+      file:
+        path: /root/data
+        state: directory
+
+    - name: (Utility) Write cluster params
+      template:
+        src: /runner/templates/sno_params.j2
+        dest: /tmp/sno_params
+
+    - name: (Utility) Copy pull secret
+      copy:
+        src: /runner/keys/openshift_pull.json
+        dest: /root/openshift_pull.json
+
+    - name: (AICLI) Create Cluster
+      command: aicli create cluster {{ cluster_name }} --pf /tmp/sno_params
+      retries: 3
+      delay: 5
+      register: ai_result
+      until: ai_result.rc == 0
+
+    - name: (AICLI) Download ISO
+      command: aicli download iso {{ cluster_name }} -p /root/data/
+      retries: 3
+      delay: 5
+      register: ai_result
+      until: ai_result.rc == 0
+
+    - name: (Utility) Rename ISO
+      command: mv /root/data/{{ cluster_name }}.iso /root/data/image.iso
+
+    - name: (Utility) Create iPXE artifacts from the ISO
+      command: podman run -v /root/data:/data:Z -it --rm quay.io/ohadlevy/ai-ipxe
+
+    - name: (Utility) Expose webserver
+      command: podman run --name webserver -v /root/data/ipxe:/app:ro -p 8888:8080 -d --rm bitnami/nginx:latest
+
+    - name: (Utility) Replace localhost with utility IP
+      command: sed -e s/localhost/{{ utility_ip }}/g -i /root/data/ipxe/ipxe
+
+    - name: (Equinix) Update device IPXE script path and remove userdata
+      command: metal device update --config /root/metal.yaml --id {{ node_id }} -s {{ utility_ipxe_url }} -u " " -a true
+
+    - name: (Equinix) Reboot device
+      command: metal device reboot --config /root/metal.yaml --id {{ node_id }} 
+
+    - name: (AICLI) Wait for ISO to boot and node ready for installation, timeout after 20 minutes
+      shell: aicli list cluster | grep {{ cluster_name }} | awk '{print $6}'
+      retries: 20
+      delay: 60
+      register: ai_result
+      until: ai_result.stdout == "ready"
+
+    - name: (Equinix) Update device and disable IPXE boot
+      command: metal device update --config /root/metal.yaml --id {{ node_id }} -a false -s false
+
+    - name: (AICLI) Start cluster install
+      command: aicli start cluster {{ cluster_name }}
+
+    # give it 1 hour for the installation to complete
+    - name: (AICLI) Wait up to 1 hour until cluster is successfully installed
+      shell: aicli list cluster | grep {{ cluster_name }} | awk '{print $6}'
+      retries: 60
+      delay: 60
+      register: ai_result
+      # statuses: installing => finalizing => installed
+      until: ai_result.stdout == "installed"
+
+# Switch to the local execution environment
+- hosts: localhost
+  vars:
+    ansible_connection: local
+    utility_id: "{{ hostvars['localhost']['utility_id'] }}"
+
+  tasks:
+    - name: "(Equinix) Delete Utility server with ID: {{ utility_id }}"
+      command: metal device delete --config /runner/metal.yaml -f --id {{ utility_id }}

@@ -1,0 +1,17 @@
+---
+version: 1
+
+build_arg_defaults:
+   EE_BASE_IMAGE: registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel8
+   EE_BUILDER_IMAGE: registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel8
+
+dependencies:
+   galaxy: requirements.yml
+   python: requirements.txt
+   system: bindep.txt
+
+additional_build_steps:
+   append:
+     - RUN mkdir -p /home/runner/.config/equinix
+     - RUN go install github.com/equinix/metal-cli/cmd/metal@latest
+     - RUN cp $HOME/go/bin/metal /usr/bin/metal

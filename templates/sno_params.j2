@@ -1,0 +1,30 @@
+sno: true
+ssh_public_key: {{ ssh_public_key }}
+base_dns_domain: {{ base_domain }}
+api_vip: {{ node_ip }}
+ingress_vip: {{ node_ip }}
+static_network_config:
+- interfaces:
+    - name: ens3f0
+      type: ethernet
+      state: up
+      ethernet:
+        auto-negotiation: true
+        duplex: full
+      ipv4:
+        address:
+        - ip: {{ node_ip }}
+          prefix-length: 24
+        enabled: true
+      mtu: 1500
+      mac-address: '{{ node_mac }}'
+  dns-resolver:
+    config:
+      server:
+      - 8.8.8.8
+  routes:
+    config:
+    - destination: 0.0.0.0/0
+      next-hop-address: {{ node_gateway }}
+      next-hop-interface: ens3f0
+      table-id: 254
