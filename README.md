@@ -48,7 +48,7 @@ There is several variables that has to be configured properly in order for the p
 1. Edit the file *metal.yaml* and set the variables organization_id, project_id, token from Equinix Portal (how to get those is outside of scope of this document)
 2. Add OpenShift pullsecret under *keys* directory and name the file *openshift_pull.json*
 3. Add both SSH public key and private key under the *keys* directory, name the file ssh_public_key and ssh_private_key
-    - IMPORTANT: change permission on private key: `chmod 600 keys/ssh_private_key`
+    - IMPORTANT: change permission on private key: `chmod 600 keys/ssh_private.key`
 4. Edit *group_vars/all*
     - Add again *api_token* and *project_id* from metal.yaml, needed by the equinix ansible collection
     - Set *ai_offlinetoken* to the OCM token from https://console.redhat.com/openshift/token 

@@ -12,8 +12,8 @@
       project_id: "{{ project_id }}"
       hostnames: utility
       operating_system: rhel_8
-      plan: c3.small.x86
-      facility: da11
+      plan: "{{ plan }}"
+      facility: "{{ facility }}"
       state: active
       wait_timeout: 600
 
@@ -22,8 +22,8 @@
       project_id: "{{ project_id }}"
       hostnames: "{{ cluster_name }}"
       operating_system: custom_ipxe
-      plan: c3.small.x86
-      facility: da11
+      plan: "{{ plan }}"
+      facility: "{{ facility }}"
       state: active
       wait_timeout: 600
       user_data: |
@@ -37,7 +37,7 @@
   
   - name: Add utility host
     add_host:
-      hostname: "{{ result.devices[0].public_ipv4 }}"
+      hostname: "{{ (result.devices | selectattr('hostname','equalto','utility') | list | first).public_ipv4 }}"
       ansible_private_key_file: "{{ ssh_private_key }}"
       groups: utility
 
@@ -53,12 +53,12 @@
   - name: Set variables
     set_fact:
       # ID are used to reboot and to delete the instance
-      utility_id: "{{ result.devices[0].id }}"
-      node_id: " {{ result.devices[1].id }}"
+      utility_id: "{{ (result.devices | selectattr('hostname','equalto','utility') | list | first).id }}"
+      node_id: " {{ (result.devices | selectattr('hostname','equalto',cluster_name) | list | first).id }}"
 
       # Network info
-      utility_ip: "{{ result.devices[0].public_ipv4 }}"
-      node_ip: "{{ result.devices[1].public_ipv4 }}"
+      utility_ip: "{{ (result.devices | selectattr('hostname','equalto','utility') | list | first).public_ipv4 }}"
+      node_ip: "{{ (result.devices | selectattr('hostname','equalto',cluster_name) | list | first).public_ipv4 }}"
       node_mac: "{{ mac_address }}"
       node_gateway: "{{ gateway  }}"
 

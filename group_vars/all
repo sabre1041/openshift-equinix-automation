@@ -5,8 +5,12 @@ project_id: [EQUINIX_PROJECT_ID]
 # Assisted Installer vars
 ai_offlinetoken: [INSERT_HERE_OFFLINE_TOKEN]
 ssh_private_key: /runner/keys/ssh_private.key
-ssh_public_key: {{ lookup('file', '/runner/keys/ssh_public.key') }}
+ssh_public_key: "{{ lookup('file', '/runner/keys/ssh_public.key') }}"
 
 # SNO cluster
 cluster_name: equinixsno01
 base_domain: metal.lab
+
+# Equinix variables
+facility: ny7
+plan: c3.small.x86
