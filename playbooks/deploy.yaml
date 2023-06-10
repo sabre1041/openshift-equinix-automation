@@ -41,6 +41,14 @@
       ansible_private_key_file: "{{ ssh_private_key }}"
       groups: utility
 
+  - name: Create metal.env file
+    copy:
+      dest: /runner/metal.env
+      content: |
+        organization-id: {{ organization_id }}
+        project-id: {{ project_id }}
+        api_token: {{ api_token }}
+
   # Gather variables for cluster install
   - name: (Equinix) Get mac address of first device
     shell: metal device get --config /runner/metal.yaml -o json | jq -r .[0].network_ports[0].data.mac

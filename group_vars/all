@@ -1,6 +1,7 @@
 # Metal env
 api_token: [EQUINIX_API_TOKEN]
 project_id: [EQUINIX_PROJECT_ID]
+organization_id: [EQUINIX_ORGANIZATION_ID]
 
 # Assisted Installer vars
 ai_offlinetoken: [INSERT_HERE_OFFLINE_TOKEN]
