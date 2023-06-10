@@ -1,0 +1,238 @@
+---
+- hosts: localhost
+  vars:
+    ansible_connection: local
+    
+  environment:
+    METAL_API_TOKEN: "{{ api_token }}"
+
+  tasks:
+  - name: (Equinix) Deploy utility server
+    equinix.metal.device:
+      project_id: "{{ project_id }}"
+      hostnames: utility
+      operating_system: rhel_8
+      plan: "{{ plan }}"
+      facility: "{{ facility }}"
+      state: active
+      wait_timeout: 600
+
+  - name: "(Equinix) Deploy {{ cluster_name }} device"
+    equinix.metal.device:
+      project_id: "{{ project_id }}"
+      hostnames: "{{ cluster_name }}"
+      operating_system: custom_ipxe
+      plan: "{{ plan }}"
+      facility: "{{ facility }}"
+      state: active
+      wait_timeout: 600
+      user_data: |
+        #!ipxe
+        shell
+      
+  - name: (Equinix) Gather information about all devices
+    equinix.metal.device_info:
+      project_id: "{{ project_id }}"
+    register: result
+  
+  - name: Add utility host
+    add_host:
+      hostname: "{{ (result.devices | selectattr('hostname','equalto','utility') | list | first).public_ipv4 }}"
+      ansible_private_key_file: "{{ ssh_private_key }}"
+      groups: utility
+
+  - name: Create metal.env file
+    copy:
+      dest: /runner/metal.env
+      content: |
+        organization-id: {{ organization_id }}
+        project-id: {{ project_id }}
+        api_token: {{ api_token }}
+
+  # Gather variables for cluster install
+  - name: (Equinix) Get mac address
+    shell: metal device get --config /runner/metal.yaml -o json | jq -r '.[] | select(any(. == "{{ cluster_name }}")).network_ports[0].data.mac'
+    register: mac_address
+
+  - name: (Equinix) Get gateway
+    shell: metal device get --config /runner/metal.yaml -o json | jq -r '.[] | select(any(. == "{{ cluster_name }}")).ip_addresses[0].gateway'
+    register: gateway
+
+  - name: (Equinix) Get netmask
+    shell: metal device get --config /runner/metal.yaml -o json | jq -r '.[] | select(any(. == "{{ cluster_name }}")).ip_addresses[0].cidr'
+    register: netmask
+
+
+  - name: Set variables
+    set_fact:
+      # ID are used to reboot and to delete the instance
+      utility_id: "{{ (result.devices | selectattr('hostname','equalto','utility') | list | first).id }}"
+      node_id: " {{ (result.devices | selectattr('hostname','equalto',cluster_name) | list | first).id }}"
+
+      # Network info
+      utility_ip: "{{ (result.devices | selectattr('hostname','equalto','utility') | list | first).public_ipv4 }}"
+      node_ip: "{{ (result.devices | selectattr('hostname','equalto',cluster_name) | list | first).public_ipv4 }}"
+      node_mac: "{{ mac_address }}"
+      node_gateway: "{{ gateway  }}"
+      node_netmask: "{{ netmask }}"
+
+# Setup utility server, used to iPXE discovery ISO for Assisted Installer
+- hosts: utility
+  remote_user: root
+
+  vars:
+    utility_ip: "{{ hostvars['localhost']['utility_ip'] }}"
+    utility_ipxe_url: "http://{{ utility_ip }}:8888/ipxe"
+    node_id: "{{ hostvars['localhost']['node_id'] }}"
+    node_ip: "{{ hostvars['localhost']['node_ip'] }}"
+    node_mac: "{{ hostvars['localhost']['node_mac'].stdout }}"
+    node_gateway: "{{ hostvars['localhost']['node_gateway'].stdout }}"
+    node_netmask: "{{ hostvars['localhost']['node_netmask'].stdout }}"
+
+  environment:
+    AI_OFFLINETOKEN: "{{ ai_offlinetoken }}"
+
+  tasks:
+    - name: (Utility) Install packages podman and python
+      dnf:
+        name:
+          - podman
+          - python3
+          - go
+          - nmstate
+        state: present
+
+    - name: (Utility) Install Metal CLI
+      command: go install github.com/equinix/metal-cli/cmd/metal@latest
+
+    - name: (Utility) Link Metal CLI bin
+      command: ln -s /root/go/bin/metal /usr/bin/metal
+
+    - name: (Utility) Copy Metal env
+      copy:
+        src: /runner/metal.yaml
+        dest: /root/metal.yaml
+
+    - name: (Utility) Add API name to hosts file
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ node_ip }}    api.{{ cluster_name }}.{{ base_domain }}"
+
+    - name: (Utility) Download openshift-client
+      get_url:
+        url: "{{ openshift_client }}"
+        dest: /root/openshift-client.tar.gz
+   
+    - name: (Utility) Download openshift-install
+      get_url:
+        url: "{{ openshift_install }}"
+        dest: /root/openshift-install.tar.gz
+
+    - name: (Utility) Uncompress openshift-client
+      unarchive:
+        src: /root/openshift-client.tar.gz
+        dest: /usr/bin
+        remote_src: true
+    
+    - name: (Utility) Uncompress openshift-install
+      unarchive:
+        src: /root/openshift-install.tar.gz
+        dest: /usr/bin
+        remote_src: true
+
+    - name: (Utility) Create data directory
+      file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - /root/data
+        - /root/abi
+
+    - name: (Utility) Write install-config.yaml
+      template:
+        src: /runner/templates/sno_install_config.j2
+        dest: /root/abi/install-config.yaml
+
+    - name: (Utility) Write agent-config.yaml
+      template:
+        src: /runner/templates/sno_agent_config.j2
+        dest: /root/abi/agent-config.yaml
+
+    - name: (OCP) Generate ABI ISO Image
+      command: openshift-install --dir /root/abi agent create image
+
+    - name: (Utility) Rename ISO
+      command: mv /root/abi/agent.x86_64.iso /root/data/image.iso
+
+    - name: (Utility) Create iPXE artifacts from the ISO
+      command: podman run -v /root/data:/data:Z -it --rm quay.io/ohadlevy/ai-ipxe
+
+    - name: (Utility) Expose webserver
+      command: podman run --name webserver -v /root/data/ipxe:/app:ro -p 8888:8080 -d --rm bitnami/nginx:latest
+
+    - name: (Utility) Replace localhost with utility IP
+      command: sed -e s/localhost/{{ utility_ip }}/g -i /root/data/ipxe/ipxe
+
+    - name: (Equinix) Update device IPXE script path and remove userdata
+      command: metal device update --config /root/metal.yaml --id {{ node_id }} -s {{ utility_ipxe_url }} -u " " -a true
+
+    - name: (Equinix) Reboot device
+      command: metal device reboot --config /root/metal.yaml --id {{ node_id }} 
+
+    - name: (OCP) Monitor installation status
+      shell: openshift-install --dir /root/abi/ agent wait-for bootstrap-complete --log-level=debug 2> /tmp/install.log &
+      async: 1800 
+      poll: 30
+
+    - name: (OCP) Monitor installation status - cluster installation start
+      wait_for:
+        path: /tmp/install.log
+        search_regex: Cluster installation in progress
+        connect_timeout: 1200
+        timeout: 1200
+
+    - name: (Equinix) Update device and disable IPXE boot
+      command: metal device update --config /root/metal.yaml --id {{ node_id }} -a false -s false
+
+    # Sometime the Metal API is not updating the 'always PXE' parameter on the device, this will ensure to not boot again the ISO via PXE
+    - name: (Utility) Stop iPXE webserver
+      command: podman stop webserver
+
+    - name: (OCP) Monitor installation status - bootstrap-completed
+      command: openshift-install --dir /root/abi/ agent wait-for bootstrap-complete --log-level=debug
+      timeout: 2500
+
+    - name: (OCP) Monitor installation status - install-completed
+      command: openshift-install --dir /root/abi/ agent wait-for install-complete --log-level=debug
+      register: abi_result
+      timeout: 2500
+
+    - name: (OCP) Install log and credentials
+      debug:
+        msg: "{{ abi_result }}"
+
+    - name: (OCP) Get kubeconfig
+      command: cat /root/abi/auth/kubeconfig
+      register: kubeconfig_output
+
+    - name: (OCP) Get kubeadmin
+      command: cat /root/abi/auth/kubeadmin-password     
+      register: kubeadmin_output
+
+    - name: (OCP) Display kubeconfig
+      debug:
+        msg: "{{ kubeconfig_output.stdout }}"
+
+    - name: (OCP Display kubeadmin password
+      debug:
+        msg: "{{ kubeadmin_output.stdout }}"
+
+# Switch to the local execution environment
+- hosts: localhost
+  vars:
+    ansible_connection: local
+    utility_id: "{{ hostvars['localhost']['utility_id'] }}"
+
+  tasks:
+    - name: "(Equinix) Delete Utility server with ID: {{ utility_id }}"
+      command: metal device delete --config /runner/metal.yaml -f --id {{ utility_id }}

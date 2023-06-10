@@ -7,11 +7,12 @@ organization_id: [EQUINIX_ORGANIZATION_ID]
 ai_offlinetoken: [INSERT_HERE_OFFLINE_TOKEN]
 ssh_private_key: /runner/keys/ssh_private.key
 ssh_public_key: "{{ lookup('file', '/runner/keys/ssh_public.key') }}"
+pull_secret: "{{ lookup('file', '/runner/keys/openshift_pull.json')|string }}"
 
 # SNO cluster
 cluster_name: equinixsno01
 base_domain: metal.lab
 
-# Equinix variables
+# Equinix environment
 facility: ny7
 plan: c3.small.x86

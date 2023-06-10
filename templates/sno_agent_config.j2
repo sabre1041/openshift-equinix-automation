@@ -1,0 +1,32 @@
+apiVersion: v1alpha1
+kind: AgentConfig
+metadata:
+  name: {{ cluster_name }}
+rendezvousIP: {{ node_ip }}
+hosts:
+  - hostname: {{ cluster_name }}
+    interfaces:
+      - name: ens3f0
+        macAddress: {{ node_mac }}
+    networkConfig:
+      interfaces:
+        - name: ens3f0
+          type: ethernet
+          state: up
+          mac-address: {{ node_mac }}
+          ipv4:
+            enabled: true
+            address:
+              - ip: {{ node_ip }}
+                prefix-length: {{ node_netmask }}
+            dhcp: false
+      dns-resolver:
+        config:
+          server:
+            - 8.8.8.8
+      routes:
+        config:
+        - destination: 0.0.0.0/0
+          next-hop-address: {{ node_gateway }}
+          next-hop-interface: ens3f0
+          table-id: 254
