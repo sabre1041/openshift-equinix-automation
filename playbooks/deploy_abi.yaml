@@ -7,6 +7,10 @@
     METAL_API_TOKEN: "{{ api_token }}"
 
   tasks:
+  - name: Set start time
+    set_fact:
+      deployment_start_time: "{{ ansible_date_time.iso8601[:19] | to_datetime('%Y-%m-%dT%H:%M:%S') }}"
+
   - name: (Equinix) Deploy utility server
     equinix.metal.device:
       project_id: "{{ project_id }}"
@@ -61,7 +65,6 @@
   - name: (Equinix) Get netmask
     shell: metal device get --config /runner/metal.yaml -o json | jq -r '.[] | select(any(. == "{{ cluster_name }}")).ip_addresses[0].cidr'
     register: netmask
-
 
   - name: Set variables
     set_fact:
@@ -201,15 +204,16 @@
     - name: (OCP) Monitor installation status - bootstrap-completed
       command: openshift-install --dir /root/abi/ agent wait-for bootstrap-complete --log-level=debug
       timeout: 2500
+      register: abi_bootstrap
 
     - name: (OCP) Monitor installation status - install-completed
       command: openshift-install --dir /root/abi/ agent wait-for install-complete --log-level=debug
-      register: abi_result
+      register: abi_install
       timeout: 2500
 
     - name: (OCP) Install log and credentials
       debug:
-        msg: "{{ abi_result }}"
+        msg: "{{ abi_install.stdout }}"
 
     - name: (OCP) Get kubeconfig
       command: cat /root/abi/auth/kubeconfig
@@ -227,12 +231,33 @@
       debug:
         msg: "{{ kubeadmin_output.stdout }}"
 
+    - name: Set start time
+      set_fact:
+        deployment_end_time: "{{ ansible_date_time.iso8601[:19] | to_datetime('%Y-%m-%dT%H:%M:%S') }}"
+        kubeconfig: "{{ kubeadmin_output.stdout }}"
+        kubeadmin: "{{ kubeadmin_output.stdout }}"
+
 # Switch to the local execution environment
 - hosts: localhost
   vars:
     ansible_connection: local
     utility_id: "{{ hostvars['localhost']['utility_id'] }}"
+    deployment_start_time: "{{ hostvars['localhost']['deployment_start_time'] }}"
+    deployment_end_time: "{{ hostvars['utility']['deployment_end_time'] }}"
+    deployment_duration_sec: "{{ ( (deployment_end_time - deployment_start_time).total_seconds() / 3600 ) | int }}"
+    kubeadmin_pwd: "{{ hostvars['utility']['kubeadmin'] }}"
 
   tasks:
     - name: "(Equinix) Delete Utility server with ID: {{ utility_id }}"
       command: metal device delete --config /runner/metal.yaml -f --id {{ utility_id }}
+
+    - name: Summary deployment
+      debug:
+        msg: 
+          - "================ SUMMARY ================="
+          - "Start deployment time: {{ deployment_start_time }}"
+          - "End deployment time: {{ deployment_end_time }}"
+          - "Total deployment duration: {{ deployment_duration_sec | to_hours }}:{{ deployment_duration_sec | to_minutes }}"
+          - "\n"
+          - "OpenShift console: https://openshift-console-openshift.apps.{{ cluster_name }}.{{ base_domain }}"
+          - "Kubeadmin password: {{ kubeadmin_pwd }}"

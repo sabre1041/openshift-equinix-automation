@@ -3,6 +3,10 @@ api_token: [EQUINIX_API_TOKEN]
 project_id: [EQUINIX_PROJECT_ID]
 organization_id: [EQUINIX_ORGANIZATION_ID]
 
+# OpenShift tools
+openshift_client: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-linux.tar.gz
+openshift_install: https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-linux.tar.gz
+
 # Assisted Installer vars
 ai_offlinetoken: [INSERT_HERE_OFFLINE_TOKEN]
 ssh_private_key: /runner/keys/ssh_private.key
